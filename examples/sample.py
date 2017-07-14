@@ -1,5 +1,6 @@
 import os
 import argparse
+import logging
 import random 
 
 import torch
@@ -16,6 +17,9 @@ from seq2seq.loss import Perplexity
 from seq2seq.dataset import Dataset
 from seq2seq.evaluator import Predictor
 from seq2seq.util.checkpoint import Checkpoint
+
+init_logging()
+logger = logging.getLogger(__name__)
 
 from IPython.core.debugger import Tracer 
 debug_here = Tracer() 
@@ -50,7 +54,7 @@ parser.add_argument('--resume', action='store_true', dest='resume',
 
 opt = parser.parse_args()
 print(opt)
-
+logger.info('Options: %s', str(opt))
 
 
 os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpu_id
@@ -78,6 +82,7 @@ torch.manual_seed(opt.manualSeed)
 
 if opt.load_checkpoint is not None:
     print("loading checkpoint...")
+    logger.info('Loading checkpoint...')
     checkpoint_path = os.path.join(opt.expt_dir, Checkpoint.CHECKPOINT_DIR_NAME, opt.load_checkpoint)
     checkpoint = Checkpoint.load(checkpoint_path)
     seq2seq = checkpoint.model
@@ -93,36 +98,36 @@ else:
                     src_vocab=input_vocab,
                     tgt_vocab=output_vocab)
 
-    # Prepare model
-    hidden_size=128
-    encoder = EncoderRNN(input_vocab, dataset.src_max_len, hidden_size)
-    decoder = DecoderRNN(output_vocab, dataset.tgt_max_len, hidden_size,
+    # Prepare loss 
+    weight = torch.ones(input_vocab.get_vocab_size())
+    mask = output_vocab.MASK_token_id
+    loss = Perplexity(weight, mask)
+    if opt.cuda:
+        loss.cuda()
+
+    seq2seq = None 
+    if not opt.resume:  # opt.resume is false
+        # Initialize Model 
+        # Prepare model
+        hidden_size=128
+        encoder = EncoderRNN(input_vocab, dataset.src_max_len, hidden_size)
+        decoder = DecoderRNN(output_vocab, dataset.tgt_max_len, hidden_size,
                         dropout_p=0.2, use_attention=True)
 
-    #############################################################
-    # teacher forcing ratio is 0 by default
-    # so we train the model by feeding predicted symbol 
-    #############################################################
-    seq2seq = Seq2seq(encoder, decoder)
-    if opt.resume:
-        print("resuming training")
-        latest_checkpoint = Checkpoint.get_latest_checkpoint(opt.expt_dir)
-        seq2seq.load(latest_checkpoint)
-    else:
+        #############################################################
+        # teacher forcing ratio is 0 by default
+        # so we train the model by feeding predicted symbol 
+        #############################################################
+        seq2seq = Seq2seq(encoder, decoder)
+        if opt.cuda: 
+            seq2seq = seq2seq.cuda()
+        # initialize model 
         for param in seq2seq.parameters():
             param.data.uniform_(-0.08, 0.08)
 
-    # Prepare loss
-    weight = torch.ones(output_vocab.get_vocab_size())
-    mask = output_vocab.MASK_token_id
-    loss = Perplexity(weight, mask)
-
-    if torch.cuda.is_available():
-        seq2seq.cuda()
-        loss.cuda()
-
     # train and validation use the same teacher forcing technique
     # if teacher_forcing_ratio is set to 1, then the model is trained and validated by feeding target symbol
+
     t = SupervisedTrainer(loss=loss, batch_size=32,
                         checkpoint_every=50,
                         print_every=10, expt_dir=opt.expt_dir)
@@ -131,8 +136,8 @@ else:
     # teacher forcing ratio is 0 by default
     # so we train the model by feeding predicted symbol 
     #############################################################
+    # if opt.resume is true, we will load the latest checkpoints
     t.train(seq2seq, dataset, num_epochs=4, dev_data=dev_set, resume=opt.resume)
-
 
 
 predictor = Predictor(seq2seq, input_vocab, output_vocab)

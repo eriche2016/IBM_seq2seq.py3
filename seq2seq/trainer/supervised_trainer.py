@@ -1,4 +1,5 @@
 import os
+import logging
 import random
 
 import torch
@@ -12,6 +13,7 @@ from ..util.checkpoint import Checkpoint
 
 from IPython.core.debugger import Tracer 
 debug_here = Tracer() 
+logger = logging.getLogger(__name__)
 
 class SupervisedTrainer(object):
     """ The SupervisedTrainer class helps in setting up a training framework in a
@@ -83,8 +85,6 @@ class SupervisedTrainer(object):
         start = time.time()
         print_loss_total = 0  # Reset every print_every
 
-        self.optimizer.set_parameters(model.parameters())
-
         steps_per_epoch = data.num_batches(batch_size)
         total_steps = steps_per_epoch * n_epochs
 
@@ -93,12 +93,14 @@ class SupervisedTrainer(object):
             latest_checkpoint_path = Checkpoint.get_latest_checkpoint(self.expt_dir)
             resume_checkpoint = Checkpoint.load(latest_checkpoint_path)
             model = resume_checkpoint.model
+            self.optimizer.set_parameters(model.parameters())
             self.optimizer.load_state_dict(resume_checkpoint.optimizer_state_dict)
             start_epoch = resume_checkpoint.epoch
             step = resume_checkpoint.step
         else:
             start_epoch = 1
             step = 0
+            self.optimizer.set_parameters(model.parameters())
 
 
         #######################
@@ -132,14 +134,15 @@ class SupervisedTrainer(object):
                         self.loss.name,
                         print_loss_avg)
                     print(log_msg)
+                    logger.info(log_msg)
 
                 # Checkpoint
                 if step % self.checkpoint_every == 0 or step == total_steps:
-                    Checkpoint(root_dir=self.expt_dir, model=model,
+                    Checkpoint(model=model,
                                optimizer_state_dict=self.optimizer.state_dict(),
                                epoch=epoch, step=step,
                                input_vocab=data.input_vocab,
-                               output_vocab=data.output_vocab).save()
+                               output_vocab=data.output_vocab).save(self.expt_dir)
 
             log_msg = "Finished epoch {0}".format(epoch)
             if dev_data is not None:
@@ -149,6 +152,8 @@ class SupervisedTrainer(object):
                 log_msg += ", Dev %s: %.4f" % (self.loss.name, dev_loss)
                 model.train(mode=True)
             print(log_msg)
+            logger.info(log_msg)
+
 
     def train(self, model, data, num_epochs=5, resume=False, dev_data=None, teacher_forcing_ratio=0):
         """ Run training for a given model.
